@@ -1,0 +1,8 @@
+[project]
+name = "ds4"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "hf-xet>=1.7.0",
+    "huggingface-hub>=2.2.0",
+]
