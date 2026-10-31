@@ -59,8 +59,18 @@ def records(path):
     return out
 
 
-def measure(path):
+def measure(path, date=None, time_from=None, time_to=None):
     recs = records(path)
+    # A capture can span server restarts; a restart may have changed flags, so
+    # allow measuring one process lifetime at a time.
+    if date:
+        recs = [r for r in recs if r["day"] == date]
+    if time_from:
+        recs = [r for r in recs if r["t"] >= time_from]
+    if time_to:
+        recs = [r for r in recs if r["t"] <= time_to]
+    if not recs:
+        sys.exit("no records in that window")
     blob = "\n".join(r["m"] for r in recs)
 
     misses = [MISS.search(r["m"]) for r in recs]
@@ -77,7 +87,7 @@ def measure(path):
     cont = [int(s["tokens"]) for s in stores if s["reason"] == "continued"]
     return {
         "source": path,
-        "window": f"{recs[0]['t']}..{recs[-1]['t']}" if recs else None,
+        "window": f"{recs[0]['day']} {recs[0]['t']}..{recs[-1]['day']} {recs[-1]['t']}",
         "records": len(recs),
         "misses": len(misses),
         "near_perfect": len(near),
@@ -141,13 +151,16 @@ def main():
     ap.add_argument("log", nargs="?")
     ap.add_argument("--json", dest="json_out")
     ap.add_argument("--diff", nargs=2, metavar=("BEFORE", "AFTER"))
+    ap.add_argument("--date", help="MMDD as printed in the capture, e.g. 1031")
+    ap.add_argument("--from", dest="time_from", help="HH:MM:SS lower bound")
+    ap.add_argument("--to", dest="time_to", help="HH:MM:SS upper bound")
     a = ap.parse_args()
     if a.diff:
         diff(json.load(open(a.diff[0])), json.load(open(a.diff[1])))
         return
     if not a.log:
         ap.error("need a log file, or --diff BEFORE AFTER")
-    m = measure(a.log)
+    m = measure(a.log, a.date, a.time_from, a.time_to)
     for k in KEYS:
         print(f"  {k:22} {m[k]}")
     if a.json_out:

@@ -38,11 +38,23 @@ Also in this series: `97af164` merges `upstream/main` (13 commits), which brings
 re-prefill after reasoning-free turns. That merge is not a carried patch; it is
 just catching up.
 
-## Evidence that motivated it (2026-10-30, 12:02–23:18)
+## Evidence that motivated it
 
-Two resident conversations ran at 97–99.5% hit rate (~700 tokens re-paid per
-turn, decode 45–53 t/s). With four-plus conversations in play: 75–94% hit,
-~12,000 tokens re-paid per turn.
+Measured with `tools/ds4-kv-telemetry.py` over tmux scrollback (de-wrapped —
+see that tool's docstring for why raw greps of a capture undercount).
+
+| window | misses | **near-perfect misses** | churn evictions | continued rungs | decode p50 |
+|---|---|---|---|---|---|
+| Oct 30 12:02–23:40 (64 GiB budget) | 28 | **16** (1.80M tokens) | 13 | `[131072]` | 39.8 t/s |
+| Oct 31 19:01–20:42 (128 GiB budget) | 3 | 1 | **0** | `[]` | 31.8 t/s |
+
+The second row is not the patch series: it is the `--kv-disk-space-mb 131072`
+retune, already running in production. **It removed the churn evictions outright.**
+The near-perfect miss that survived is a code-path failure, not a budget failure,
+and is what the carried patches are for. Full 8-hour day: 29 full rebuilds and
+3.65M tokens re-prefilled.
+
+The two failure signatures, straight from the log:
 
 ```
 14:36:07  live kv cache miss live=193921 prompt=193563 common=193563 vision=match reason=token-mismatch
@@ -73,8 +85,10 @@ turn, decode 45–53 t/s). With four-plus conversations in play: 75–94% hit,
    exactly 131072). #1280 replaces that with a real ladder.
 
 Full write-up (local-only, `misc/` is gitignored):
-`misc/reports/2026-10-18-ds4-server-thrash-analysis.md`. Inventory probe:
-`tools/ds4-kv-inventory.py`.
+`misc/reports/2026-10-18-ds4-server-thrash-analysis.md`. Baseline telemetry and
+the restart runbook: `misc/reports/baseline/` and
+`misc/reports/2026-10-31-restart-runbook.md`. Inventory probe:
+`tools/ds4-kv-inventory.py`. Remediation probe: `tools/ds4-kv-telemetry.py`.
 
 ## Runtime contract the patches assume
 
