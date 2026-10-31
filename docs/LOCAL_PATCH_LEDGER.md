@@ -134,12 +134,14 @@ the restart runbook: `misc/reports/baseline/` and
 ## Deliberately not carried (yet)
 
 - **Our own Qwen rewind widening** (drop or widen the `ds4_engine_is_glm_dsa()`
-  gate at the `live_prefix_rewind_target()` call). This is the single biggest
-  remaining win — it turns a 3.5-minute interrupt recovery into ~1 token — and no
-  upstream PR does it for Qwen. #1283 is the template: it shows the `align`
-  argument and the side-state handling a widening needs. **Decision deferred until
-  post-series measurement**, because it touches KV correctness and needs a
-  bit-exactness test of its own.
+  gate at the `live_prefix_rewind_target()` call). Still open — P1 reproduces it on
+  demand — and no upstream PR does it for Qwen; #1283 is the template (its `align`
+  argument and side-state handling). **Priority downgraded by measurement:** the
+  disk fallbacks we now carry bound the damage at ~2 s instead of ~36 s, so this is
+  no longer the emergency it looked like on 2026-10-30. Revisit if a truncation
+  lands on a conversation long enough that the cold anchor misses it by a lot —
+  the cold anchor only covers prompts that are cold *first* prompts, so a
+  multi-turn regeneration is the exposure to watch.
 - **Issue #1266** (the pre-lookup `evict` save runs the eviction pass and deletes
   the cold prefix the very next line would have loaded). Open, zero comments, no
   PR. If measurement still shows `cached=0` immediately after an `evict` store, we
@@ -148,6 +150,48 @@ the restart runbook: `misc/reports/baseline/` and
 - Multimodal disk-cache path: #1281 documents that multimodal requests **never**
   take the disk path ("payloads carry no image identity"). No carried patch changes
   that; vision conversations still cannot swap in from disk.
+
+## Measured outcome (in-anger, first restart: 2026-10-31 22:07)
+
+Like-for-like evening window, same workload shape, old binary vs new:
+
+| | OLD Oct 30 22:00–23:59 | NEW Oct 31 22:07–23:59 |
+|---|---|---|
+| turns | 61 | 363 |
+| token hit rate | 89.1% | **99.3%** |
+| tokens re-prefilled | 921,168 | 277,006 |
+| **per turn** | 15,101 | **763** (−95%) |
+| rebuilds >10k tokens | 4 | **0** |
+| near-perfect misses | 4 | 1 |
+| decode p50 | 27.3 t/s | 30.1 t/s (+10%) |
+| `evict` disk keys written | 3 thinking-visible, 1 token-text | **4 / 4 token-text** |
+
+Per-patch evidence, all observed in production:
+
+- **#1212** — every `reason=evict` store now picks `key=token-text`; the old
+  binary wrote `thinking-visible` for the same turns. `hits` on `evict` files went
+  0 → 3. Causal chain: 22:25:38 theft dumps 158,319 tokens as `token-text`; at
+  23:54:48 the conversation returns with prompt 158,367 and resumes
+  `ctx=158319..158367` — **48 tokens re-prefilled instead of 158,367.**
+- **#1280** — `continued checkpoint at 131072 of 142711 (segment 48.8s)` and
+  `continued checkpoint at prompt end 175414`. The **prompt-end store is the
+  important one**: it is keyed at the prompt boundary, so unlike the `evict`
+  snapshot it *is* loadable (finding 1 is sidestepped, not fixed).
+- **#1221** — 85 `multimodal live kv hit` lines, 0 `vision=mismatch` misses.
+- **#1281 / #1258** — no `reason=disk-cache-full` churn at all.
+- **P1 probe** (`tools/probe-p1-truncation.py`) — the live rewind is still
+  refused for Qwen: `live=32029 prompt=31997 common=31997 reason=token-mismatch`
+  → `request reuses nothing`. But the cost is no longer a rebuild, because #1228's
+  bounded cold prefix caught it at 30,720: `ctx=30720..31997:1277`, **2.0 s vs
+  36.3 s** for the same prompt cold. 18× cheaper, still not the ~1 token a rewind
+  would cost.
+
+**Consequence for the interval question:** the `continued ... prompt end` store
+plus loadable `evict` snapshots mean a *smaller*
+`--kv-cache-continued-interval-tokens` is much less valuable than this ledger
+first claimed. Observed value over ~2 h at 131072: one case, ~13 s. Keep 131072
+until `tools/ds4-kv-inventory.py` shows `hits>0` on `continued` files (it shows
+`hits=0` today, 4 files / 17.9 GiB).
 
 ## Verification status
 
